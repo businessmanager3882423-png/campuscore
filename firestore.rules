@@ -1,1 +1,180 @@
 
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc(uid) {
+      return get(/databases/$(database)/documents/users/$(uid));
+    }
+
+    function activeUser() {
+      return signedIn()
+        && userDoc(request.auth.uid).data.status == "active";
+    }
+
+    function isPrincipal() {
+      return activeUser()
+        && userDoc(request.auth.uid).data.role == "principal";
+    }
+
+    function isTeacher() {
+      return activeUser()
+        && userDoc(request.auth.uid).data.role == "teacher";
+    }
+
+    function isStudent() {
+      return activeUser()
+        && userDoc(request.auth.uid).data.role == "student";
+    }
+
+    function classDoc(classId) {
+      return get(/databases/$(database)/documents/classes/$(classId));
+    }
+
+    function teachesClass(classId) {
+      return isTeacher()
+        && classDoc(classId).data.teacherIds is list
+        && request.auth.uid in classDoc(classId).data.teacherIds;
+    }
+
+    function enrolledInClass(classId) {
+      return isStudent()
+        && request.auth.uid in classDoc(classId).data.studentIds;
+    }
+
+    match /users/{uid} {
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.uid == uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.role == "student"
+        && request.resource.data.status == "active"
+        && request.resource.data.keys().hasOnly([
+          "uid", "name", "email", "role", "status", "createdAt"
+        ]);
+
+      allow get: if activeUser() && (
+        request.auth.uid == uid
+        || isPrincipal()
+        || (isTeacher() && resource.data.role == "student")
+      );
+
+      allow list: if isPrincipal()
+        || (isTeacher() && resource.data.role == "student");
+
+      allow update: if isPrincipal()
+        && resource.data.role != "principal"
+        && request.resource.data.role in ["teacher", "student"]
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(["role", "status", "updatedAt"]);
+
+      allow delete: if isPrincipal()
+        && resource.data.role != "principal";
+    }
+
+    match /classes/{classId} {
+      allow read: if isPrincipal()
+        || teachesClass(classId)
+        || enrolledInClass(classId);
+
+      allow create, update, delete: if isPrincipal();
+    }
+
+    match /tasks/{taskId} {
+      allow read: if isPrincipal()
+        || (isTeacher() && resource.data.teacherId == request.auth.uid)
+        || (isStudent() && request.auth.uid in resource.data.studentIds);
+
+      allow create: if isPrincipal()
+        || (
+          isTeacher()
+          && request.resource.data.teacherId == request.auth.uid
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.classId is string
+          && teachesClass(request.resource.data.classId)
+          && request.resource.data.studentIds is list
+          && request.resource.data.studentIds.size() > 0
+          && request.resource.data.studentIds.size() <= 100
+          && request.resource.data.studentIds.hasAll(
+            classDoc(request.resource.data.classId).data.studentIds
+              .toSet().intersection(request.resource.data.studentIds.toSet())
+              .toList()
+          )
+          && request.resource.data.studentIds.hasOnly(
+            classDoc(request.resource.data.classId).data.studentIds
+          )
+        );
+
+      allow update: if isPrincipal()
+        || (
+          isTeacher()
+          && resource.data.teacherId == request.auth.uid
+          && request.resource.data.teacherId == resource.data.teacherId
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(["status", "feedback", "updatedAt"])
+        )
+        || (
+          isStudent()
+          && request.auth.uid in resource.data.studentIds
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(["submissions"])
+          && request.resource.data.submissions[request.auth.uid] is map
+          && request.resource.data.submissions[request.auth.uid].keys()
+            .hasOnly(["text", "status", "submittedAt"])
+          && request.resource.data.submissions[request.auth.uid].text is string
+          && request.resource.data.submissions[request.auth.uid].status == "submitted"
+          && request.resource.data.submissions[request.auth.uid].text.size() <= 20000
+        );
+
+      allow delete: if isPrincipal();
+    }
+
+    match /attendance/{attendanceId} {
+      allow read: if isPrincipal()
+        || (isTeacher() && resource.data.teacherId == request.auth.uid)
+        || (isStudent() && resource.data.studentId == request.auth.uid);
+
+      allow create, update: if isPrincipal()
+        || (
+          isTeacher()
+          && request.resource.data.teacherId == request.auth.uid
+          && request.resource.data.classId is string
+          && teachesClass(request.resource.data.classId)
+          && request.resource.data.studentId in
+            classDoc(request.resource.data.classId).data.studentIds
+          && request.resource.data.status in [
+            "present", "absent", "late", "leave"
+          ]
+          && request.resource.data.date is string
+        );
+
+      allow delete: if isPrincipal();
+    }
+
+    match /monthlyRegisters/{registerId} {
+      allow read: if isPrincipal()
+        || (isTeacher() && resource.data.teacherId == request.auth.uid);
+
+      allow create: if isPrincipal()
+        || (
+          isTeacher()
+          && request.resource.data.teacherId == request.auth.uid
+          && request.resource.data.classId is string
+          && teachesClass(request.resource.data.classId)
+          && request.resource.data.status == "submitted"
+        );
+
+      allow update, delete: if isPrincipal();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+
