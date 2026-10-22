@@ -1,1 +1,26 @@
 
+{
+  "cleanUrls": true,
+  "trailingSlash": false,
+  "headers": [
+    {
+      "source": "/js/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache"
+        }
+      ]
+    },
+    {
+      "source": "/firestore.rules",
+      "headers": [
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        }
+      ]
+    }
+  ]
+}
+
