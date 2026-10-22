@@ -1,4 +1,5 @@
 
+
 import { auth, db } from "./firebase.js";
 import { loginUser, registerUser, logoutUser, watchAuth } from "./auth.js";
 import { renderPrincipal } from "./principal.js";
