@@ -3,84 +3,86 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-
     function signedIn() {
       return request.auth != null;
     }
 
-    function userDoc(uid) {
-      return get(/databases/$(database)/documents/users/$(uid));
+    function myProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
     function activeUser() {
       return signedIn()
-        && userDoc(request.auth.uid).data.status == "active";
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && myProfile().status == 'active';
     }
 
     function isPrincipal() {
-      return activeUser()
-        && userDoc(request.auth.uid).data.role == "principal";
+      return activeUser() && myProfile().role == 'principal';
     }
 
     function isTeacher() {
-      return activeUser()
-        && userDoc(request.auth.uid).data.role == "teacher";
+      return activeUser() && myProfile().role == 'teacher';
     }
 
     function isStudent() {
-      return activeUser()
-        && userDoc(request.auth.uid).data.role == "student";
+      return activeUser() && myProfile().role == 'student';
     }
 
-    function classDoc(classId) {
-      return get(/databases/$(database)/documents/classes/$(classId));
+    function validRole(role) {
+      return role in ['principal', 'teacher', 'student'];
     }
 
-    function teachesClass(classId) {
+    function assignedTeacher(classId) {
       return isTeacher()
-        && classDoc(classId).data.teacherIds is list
-        && request.auth.uid in classDoc(classId).data.teacherIds;
+        && exists(/databases/$(database)/documents/classes/$(classId))
+        && request.auth.uid in get(/databases/$(database)/documents/classes/$(classId)).data.teacherIds;
     }
 
-    function enrolledInClass(classId) {
+    function enrolledStudent(classId) {
       return isStudent()
-        && request.auth.uid in classDoc(classId).data.studentIds;
+        && exists(/databases/$(database)/documents/classes/$(classId))
+        && request.auth.uid in get(/databases/$(database)/documents/classes/$(classId)).data.studentIds;
     }
 
     match /users/{uid} {
       allow create: if signedIn()
         && request.auth.uid == uid
         && request.resource.data.uid == uid
-        && request.resource.data.email == request.auth.token.email
-        && request.resource.data.role == "student"
-        && request.resource.data.status == "active"
-        && request.resource.data.keys().hasOnly([
-          "uid", "name", "email", "role", "status", "createdAt"
-        ]);
+        && request.resource.data.role == 'student'
+        && request.resource.data.status == 'active'
+        && request.resource.data.email == request.auth.token.email;
 
-      allow get: if activeUser() && (
-        request.auth.uid == uid
-        || isPrincipal()
-        || (isTeacher() && resource.data.role == "student")
-      );
+      allow get: if activeUser()
+        && (request.auth.uid == uid || isPrincipal()
+          || (isTeacher()
+            && resource.data.role == 'student'));
 
       allow list: if isPrincipal()
-        || (isTeacher() && resource.data.role == "student");
+        || (isTeacher() && resource.data.role == 'student');
 
       allow update: if isPrincipal()
-        && resource.data.role != "principal"
-        && request.resource.data.role in ["teacher", "student"]
-        && request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(["role", "status", "updatedAt"]);
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.email == resource.data.email
+        && validRole(request.resource.data.role)
+        && request.resource.data.status in ['active', 'suspended'];
 
-      allow delete: if isPrincipal()
-        && resource.data.role != "principal";
+      allow update: if activeUser()
+        && request.auth.uid == uid
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.status == resource.data.status
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['name', 'program', 'semester', 'updatedAt']);
+
+      allow delete: if isPrincipal();
     }
 
     match /classes/{classId} {
       allow read: if isPrincipal()
-        || teachesClass(classId)
-        || enrolledInClass(classId);
+        || assignedTeacher(classId)
+        || enrolledStudent(classId);
 
       allow create, update, delete: if isPrincipal();
     }
@@ -91,47 +93,24 @@ service cloud.firestore {
         || (isStudent() && request.auth.uid in resource.data.studentIds);
 
       allow create: if isPrincipal()
-        || (
-          isTeacher()
+        || (assignedTeacher(request.resource.data.classId)
           && request.resource.data.teacherId == request.auth.uid
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.classId is string
-          && teachesClass(request.resource.data.classId)
-          && request.resource.data.studentIds is list
-          && request.resource.data.studentIds.size() > 0
-          && request.resource.data.studentIds.size() <= 100
-          && request.resource.data.studentIds.hasAll(
-            classDoc(request.resource.data.classId).data.studentIds
-              .toSet().intersection(request.resource.data.studentIds.toSet())
-              .toList()
-          )
-          && request.resource.data.studentIds.hasOnly(
-            classDoc(request.resource.data.classId).data.studentIds
-          )
-        );
+          && request.resource.data.createdBy == request.auth.uid);
 
       allow update: if isPrincipal()
-        || (
-          isTeacher()
+        || (isTeacher()
           && resource.data.teacherId == request.auth.uid
           && request.resource.data.teacherId == resource.data.teacherId
-          && request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(["status", "feedback", "updatedAt"])
-        )
-        || (
-          isStudent()
-          && request.auth.uid in resource.data.studentIds
-          && request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(["submissions"])
-          && request.resource.data.submissions[request.auth.uid] is map
-          && request.resource.data.submissions[request.auth.uid].keys()
-            .hasOnly(["text", "status", "submittedAt"])
-          && request.resource.data.submissions[request.auth.uid].text is string
-          && request.resource.data.submissions[request.auth.uid].status == "submitted"
-          && request.resource.data.submissions[request.auth.uid].text.size() <= 20000
-        );
+          && request.resource.data.createdBy == resource.data.createdBy);
 
-      allow delete: if isPrincipal();
+      allow update: if isStudent()
+        && request.auth.uid in resource.data.studentIds
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['submissions', 'updatedAt'])
+        && request.resource.data.submissions[request.auth.uid] is map;
+
+      allow delete: if isPrincipal()
+        || (isTeacher() && resource.data.teacherId == request.auth.uid);
     }
 
     match /attendance/{attendanceId} {
@@ -139,37 +118,52 @@ service cloud.firestore {
         || (isTeacher() && resource.data.teacherId == request.auth.uid)
         || (isStudent() && resource.data.studentId == request.auth.uid);
 
-      allow create, update: if isPrincipal()
-        || (
-          isTeacher()
+      allow create: if isPrincipal()
+        || (assignedTeacher(request.resource.data.classId)
           && request.resource.data.teacherId == request.auth.uid
-          && request.resource.data.classId is string
-          && teachesClass(request.resource.data.classId)
-          && request.resource.data.studentId in
-            classDoc(request.resource.data.classId).data.studentIds
-          && request.resource.data.status in [
-            "present", "absent", "late", "leave"
-          ]
-          && request.resource.data.date is string
-        );
+          && request.resource.data.recordedBy == request.auth.uid
+          && request.resource.data.status in ['present', 'absent', 'late', 'leave']);
+
+      allow update: if isPrincipal()
+        || (assignedTeacher(resource.data.classId)
+          && resource.data.teacherId == request.auth.uid
+          && request.resource.data.teacherId == resource.data.teacherId
+          && request.resource.data.studentId == resource.data.studentId
+          && request.resource.data.classId == resource.data.classId);
 
       allow delete: if isPrincipal();
     }
 
-    match /monthlyRegisters/{registerId} {
+    match /notices/{noticeId} {
+      allow read: if activeUser()
+        && (isPrincipal()
+          || resource.data.audience == 'all'
+          || (isTeacher() && resource.data.audience == 'teacher')
+          || (isStudent() && resource.data.audience == 'student'));
+
+      allow create, update, delete: if isPrincipal();
+    }
+
+    match /exams/{examId} {
       allow read: if isPrincipal()
-        || (isTeacher() && resource.data.teacherId == request.auth.uid);
+        || (isTeacher() && assignedTeacher(resource.data.classId))
+        || (isStudent() && enrolledStudent(resource.data.classId));
 
-      allow create: if isPrincipal()
-        || (
-          isTeacher()
-          && request.resource.data.teacherId == request.auth.uid
-          && request.resource.data.classId is string
-          && teachesClass(request.resource.data.classId)
-          && request.resource.data.status == "submitted"
-        );
+      allow create, update, delete: if isPrincipal();
+    }
 
-      allow update, delete: if isPrincipal();
+    match /fees/{feeId} {
+      allow read: if isPrincipal()
+        || (isStudent() && resource.data.studentId == request.auth.uid);
+
+      allow create, update, delete: if isPrincipal();
+    }
+
+    match /auditLogs/{logId} {
+      allow read: if isPrincipal();
+      allow create: if activeUser()
+        && request.resource.data.actorUid == request.auth.uid;
+      allow update, delete: if false;
     }
 
     match /{document=**} {
@@ -177,4 +171,3 @@ service cloud.firestore {
     }
   }
 }
-
