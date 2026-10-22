@@ -1,18 +1,13 @@
 
 import { auth, db, authReady } from "./firebase.js";
-
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signOut,
   onAuthStateChanged
 } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-auth.js";
-
 import {
-  doc,
-  getDoc,
-  setDoc,
-  serverTimestamp
+  doc, getDoc, setDoc, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-firestore.js";
 
 export async function registerUser(name, email, password) {
@@ -21,19 +16,13 @@ export async function registerUser(name, email, password) {
   const cleanName = name.trim();
   const cleanEmail = email.trim().toLowerCase();
 
-  if (cleanName.length < 2) {
-    throw new Error("Please enter your full name.");
-  }
+  if (cleanName.length < 2) throw new Error("Enter your full name.");
 
   const credential = await createUserWithEmailAndPassword(
-    auth,
-    cleanEmail,
-    password
+    auth, cleanEmail, password
   );
 
   try {
-    // Public signup can create only a student profile.
-    // Teacher and Principal roles must be granted securely.
     await setDoc(doc(db, "users", credential.user.uid), {
       uid: credential.user.uid,
       name: cleanName,
@@ -42,21 +31,10 @@ export async function registerUser(name, email, password) {
       status: "active",
       createdAt: serverTimestamp()
     });
-
     return credential.user;
   } catch (error) {
-    // Avoid leaving an authenticated account with no profile
-    // when profile creation is rejected.
-    try {
-      await signOut(auth);
-    } catch {
-      // Preserve the original error.
-    }
-
-    throw new Error(
-      "Account was created, but its profile could not be saved. " +
-      "Check Firestore Rules before trying again."
-    );
+    await signOut(auth);
+    throw error;
   }
 }
 
@@ -64,32 +42,24 @@ export async function loginUser(email, password) {
   await authReady;
 
   const credential = await signInWithEmailAndPassword(
-    auth,
-    email.trim().toLowerCase(),
-    password
+    auth, email.trim().toLowerCase(), password
   );
 
   try {
-    const snapshot = await getDoc(
-      doc(db, "users", credential.user.uid)
-    );
+    const snap = await getDoc(doc(db, "users", credential.user.uid));
 
-    if (!snapshot.exists()) {
-      throw new Error(
-        "Your profile is not configured. Contact the Principal."
-      );
+    if (!snap.exists()) {
+      throw new Error("Profile not configured. Contact the Principal.");
     }
 
-    const profile = snapshot.data();
+    const profile = snap.data();
 
     if (profile.status !== "active") {
-      throw new Error(
-        "Your account is not active. Contact the Principal."
-      );
+      throw new Error("Account is inactive. Contact the Principal.");
     }
 
     if (!["principal", "teacher", "student"].includes(profile.role)) {
-      throw new Error("Your account role is not valid.");
+      throw new Error("Invalid account role.");
     }
 
     return { user: credential.user, profile };
@@ -112,29 +82,23 @@ export function watchAuth(callback) {
 
     try {
       await authReady;
+      const snap = await getDoc(doc(db, "users", user.uid));
 
-      const snapshot = await getDoc(doc(db, "users", user.uid));
-
-      if (!snapshot.exists()) {
-        callback(user, null, "Your profile is not configured.");
+      if (!snap.exists()) {
+        callback(user, null, "Profile not configured.");
         return;
       }
 
-      const profile = snapshot.data();
+      const profile = snap.data();
 
       if (profile.status !== "active") {
-        callback(user, profile, "Your account is not active.");
+        callback(user, profile, "Account is inactive.");
         return;
       }
 
       callback(user, profile);
     } catch {
-      callback(
-        user,
-        null,
-        "Unable to load your profile. Check your connection and permissions."
-      );
+      callback(user, null, "Could not load your profile.");
     }
   });
 }
-
