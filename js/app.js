@@ -1,198 +1,192 @@
 
-
 import { auth, db } from "./firebase.js";
-import { loginUser, registerUser, logoutUser, watchAuth } from "./auth.js";
+import { registerStudent, loginUser, logoutUser, resetPassword, watchAuth } from "./auth.js";
 import { renderPrincipal } from "./principal.js";
 import { renderTeacher } from "./teacher.js";
 import { renderStudent } from "./student.js";
+import { renderProfile } from "./reports.js";
 
-export const $ = id => document.getElementById(id);
+const $ = id => document.getElementById(id);
+const state = { user: null, profile: null, page: "dashboard", signup: false };
 
-export const escapeHTML = value => String(value ?? "").replace(
-  /[&<>"']/g,
-  c => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;",
-    '"': "&quot;", "'": "&#39;"
-  })[c]
-);
+const navConfig = {
+  principal: [
+    ["dashboard","▦","Dashboard"],["users","♙","Users"],["classes","▤","Classes & Subjects"],
+    ["attendance","✓","Attendance"],["tasks","▣","Assignments"],["exams","✎","Exams & Marks"],
+    ["notices","◉","Notices"],["fees","＄","Fees"],["reports","▥","Reports & Audit"]
+  ],
+  teacher: [
+    ["dashboard","▦","Dashboard"],["classes","▤","My Classes"],["attendance","✓","Attendance"],
+    ["tasks","▣","Assignments"],["exams","✎","Exams & Marks"],["notices","◉","Notices"],
+    ["reports","▥","Reports"]
+  ],
+  student: [
+    ["dashboard","▦","Dashboard"],["classes","▤","My Classes"],["attendance","✓","My Attendance"],
+    ["tasks","▣","Assignments"],["exams","✎","My Results"],["notices","◉","Notices"],
+    ["reports","▥","My Progress"]
+  ]
+};
 
-export function toast(message, error = false) {
+function toast(message, error = false) {
   const el = $("toast");
   el.textContent = message;
-  el.className = "toast show" + (error ? " error" : "");
-  clearTimeout(window.__campusToast);
-  window.__campusToast = setTimeout(() => {
-    el.className = "toast";
-  }, 3500);
+  el.className = `toast show${error ? " error" : ""}`;
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => el.classList.remove("show"), 3500);
+}
+export { toast, $, state, db, auth };
+
+function authMessage(id, message, error = false) {
+  $(id).textContent = message || "";
+  $(id).classList.toggle("error", error);
+}
+function setSignup(on) {
+  state.signup = on;
+  $("nameField").classList.toggle("hidden", !on);
+  $("loginTab").classList.toggle("active", !on);
+  $("signupTab").classList.toggle("active", on);
+  $("authTitle").textContent = on ? "Create student account" : "Welcome back";
+  $("authSubtitle").textContent = on
+    ? "Create your student portal account. Staff accounts are created by the college."
+    : "Sign in to continue to your campus workspace.";
+  $("authSubmit").textContent = on ? "Create student account" : "Sign in";
+  $("forgotPasswordBtn").classList.toggle("hidden", on);
+  $("password").autocomplete = on ? "new-password" : "current-password";
+  authMessage("authError", "");
+  authMessage("authNotice", "");
 }
 
-export const current = { user: null, profile: null };
-let signupMode = false;
-let page = "dashboard";
-
-function authMode(signup) {
-  signupMode = signup;
-  $("loginTab").classList.toggle("active", !signup);
-  $("signupTab").classList.toggle("active", signup);
-  $("nameField").classList.toggle("hidden", !signup);
-  $("fullName").required = signup;
-  $("password").autocomplete = signup ? "new-password" : "current-password";
-  $("authTitle").textContent = signup ? "Create your account" : "Welcome back";
-  $("authSubtitle").textContent = signup
-    ? "Register as a student."
-    : "Sign in to CampusCore.";
-  $("authSubmit").textContent = signup ? "Create Student Account" : "Login to CampusCore";
-  $("authError").textContent = "";
-}
-
-$("loginTab").addEventListener("click", () => authMode(false));
-$("signupTab").addEventListener("click", () => authMode(true));
+$("currentYear").textContent = new Date().getFullYear();
+$("loginTab").addEventListener("click", () => setSignup(false));
+$("signupTab").addEventListener("click", () => setSignup(true));
 
 $("authForm").addEventListener("submit", async event => {
   event.preventDefault();
-  $("authSubmit").disabled = true;
-  $("authError").textContent = "";
-
+  const submit = $("authSubmit");
+  submit.disabled = true;
+  authMessage("authError", "");
+  authMessage("authNotice", "");
   try {
-    if (signupMode) {
-      await registerUser(
-        $("fullName").value,
-        $("email").value,
-        $("password").value
-      );
-      toast("Account created. You can now log in.");
-      await logoutUser();
-      authMode(false);
-      $("password").value = "";
+    if (state.signup) {
+      await registerStudent($("fullName").value, $("email").value, $("password").value);
+      authMessage("authNotice", "Account created. Loading your student portal…");
     } else {
       await loginUser($("email").value, $("password").value);
-      toast("Login successful.");
+      authMessage("authNotice", "Signed in successfully.");
     }
   } catch (error) {
-    $("authError").textContent = error.message || "Authentication failed.";
+    authMessage("authError", friendlyError(error), true);
   } finally {
-    $("authSubmit").disabled = false;
+    submit.disabled = false;
   }
 });
 
+$("forgotPasswordBtn").addEventListener("click", async () => {
+  try {
+    await resetPassword($("email").value);
+    authMessage("authNotice", "If the email is registered, a password reset email will be sent.");
+  } catch (error) {
+    authMessage("authError", friendlyError(error), true);
+  }
+});
+
+function friendlyError(error) {
+  const code = error?.code || "";
+  const messages = {
+    "auth/invalid-credential": "Email or password is incorrect.",
+    "auth/user-not-found": "No account was found for this email.",
+    "auth/wrong-password": "Email or password is incorrect.",
+    "auth/email-already-in-use": "An account already exists for this email.",
+    "auth/invalid-email": "Enter a valid email address.",
+    "auth/weak-password": "Choose a stronger password with at least 6 characters.",
+    "auth/too-many-requests": "Too many attempts. Please try again later.",
+    "permission-denied": "Permission denied by Firestore security rules."
+  };
+  return messages[code] || error?.message || "Something went wrong. Please try again.";
+}
+
+function renderNav() {
+  const items = navConfig[state.profile.role] || [];
+  $("sidebarNav").innerHTML = items.map(([id, icon, label]) =>
+    `<button type="button" class="nav-btn ${state.page === id ? "active" : ""}" data-page="${id}">
+      <span class="nav-icon">${icon}</span><span>${label}</span>
+    </button>`
+  ).join("");
+}
+
+function showShell(user, profile) {
+  state.user = user;
+  state.profile = profile;
+  $("authScreen").classList.add("hidden");
+  $("appShell").classList.remove("hidden");
+  $("sidebarName").textContent = profile.name || user.email || "Campus User";
+  $("sidebarRole").textContent = profile.role;
+  $("userAvatar").textContent = (profile.name || user.email || "U").trim().charAt(0).toUpperCase();
+  $("topbarEmail").textContent = user.email || "";
+  $("sidebarOverlay").classList.remove("open");
+  $("sidebar").classList.remove("open");
+  renderNav();
+  renderPage();
+}
+
+function renderPage() {
+  if (!state.profile) return;
+  const item = (navConfig[state.profile.role] || []).find(x => x[0] === state.page);
+  $("pageTitle").textContent = state.page === "profile" ? "My Profile" : (item?.[2] || "Dashboard");
+  renderNav();
+  const args = { page: state.page, user: state.user, profile: state.profile };
+  if (state.page === "profile") renderProfile(args, $("dashboardContent"));
+  else if (state.profile.role === "principal") renderPrincipal(args, $("dashboardContent"));
+  else if (state.profile.role === "teacher") renderTeacher(args, $("dashboardContent"));
+  else renderStudent(args, $("dashboardContent"));
+}
+
+$("sidebarNav").addEventListener("click", event => {
+  const button = event.target.closest("[data-page]");
+  if (!button) return;
+  state.page = button.dataset.page;
+  $("sidebar").classList.remove("open");
+  $("sidebarOverlay").classList.remove("open");
+  renderPage();
+});
+$("profileBtn").addEventListener("click", () => {
+  state.page = "profile";
+  renderPage();
+});
+$("menuBtn").addEventListener("click", () => {
+  $("sidebar").classList.add("open");
+  $("sidebarOverlay").classList.add("open");
+});
+function closeSidebar() {
+  $("sidebar").classList.remove("open");
+  $("sidebarOverlay").classList.remove("open");
+}
+$("sidebarCloseBtn").addEventListener("click", closeSidebar);
+$("sidebarOverlay").addEventListener("click", closeSidebar);
 $("logoutBtn").addEventListener("click", async () => {
   try {
     await logoutUser();
-    toast("Signed out.");
+    state.page = "dashboard";
+    toast("Signed out successfully.");
   } catch (error) {
-    toast(error.message, true);
+    toast(friendlyError(error), true);
   }
 });
-
-$("menuBtn").addEventListener("click", () => {
-  $("sidebar").classList.toggle("open");
-});
-
-document.addEventListener("click", event => {
-  if (window.innerWidth <= 720 &&
-      !$("sidebar").contains(event.target) &&
-      !$("menuBtn").contains(event.target)) {
-    $("sidebar").classList.remove("open");
-  }
-});
-
-function navItems(role) {
-  if (role === "principal") {
-    return [
-      ["dashboard", "Overview"],
-      ["users", "User Management"],
-      ["classes", "Classes & Subjects"],
-      ["tasks", "All Tasks"],
-      ["attendance", "Attendance"],
-      ["reports", "Reports"]
-    ];
-  }
-  if (role === "teacher") {
-    return [
-      ["dashboard", "Overview"],
-      ["classes", "My Classes"],
-      ["tasks", "My Tasks"],
-      ["attendance", "Lecture Attendance"],
-      ["reports", "My Reports"]
-    ];
-  }
-  return [
-    ["dashboard", "Overview"],
-    ["tasks", "My Assignments"],
-    ["attendance", "My Attendance"],
-    ["reports", "My Progress"]
-  ];
-}
-
-export async function openPage(nextPage) {
-  page = nextPage;
-  $("pageTitle").textContent =
-    navItems(current.profile.role).find(item => item[0] === page)?.[1]
-    || "Dashboard";
-
-  $("sidebarNav").querySelectorAll("button").forEach(button => {
-    button.classList.toggle("active", button.dataset.page === page);
-  });
-
-  $("sidebar").classList.remove("open");
-  const root = $("dashboardContent");
-  root.innerHTML = '<div class="loading-state">Loading...</div>';
-
-  try {
-    const role = current.profile.role;
-
-    if (role === "principal") {
-      await renderPrincipal(page, root, current);
-    } else if (role === "teacher") {
-      await renderTeacher(page, root, current);
-    } else {
-      await renderStudent(page, root, current);
-    }
-  } catch (error) {
-    root.innerHTML = `<div class="panel">Could not load this page. Please check your permissions and connection.</div>`;
-    console.error(error);
-  }
-}
-
-function showPortal(user, profile) {
-  current.user = user;
-  current.profile = profile;
-
-  $("authScreen").classList.add("hidden");
-  $("appShell").classList.remove("hidden");
-  $("sidebarName").textContent = profile.name || user.email;
-  $("sidebarRole").textContent = profile.role.toUpperCase();
-  $("userAvatar").textContent = (profile.name || user.email)[0].toUpperCase();
-  $("topbarEmail").textContent = user.email;
-
-  $("sidebarNav").innerHTML = navItems(profile.role).map(([id, label]) =>
-    `<button class="nav-btn ${id === page ? "active" : ""}"
-      type="button" data-page="${id}">${label}</button>`
-  ).join("");
-
-  $("sidebarNav").querySelectorAll("button").forEach(button => {
-    button.addEventListener("click", () => openPage(button.dataset.page));
-  });
-
-  openPage(page);
-}
 
 watchAuth((user, profile, error) => {
   if (!user) {
-    current.user = null;
-    current.profile = null;
+    state.user = null;
+    state.profile = null;
     $("appShell").classList.add("hidden");
     $("authScreen").classList.remove("hidden");
+    if (error) authMessage("authError", error, true);
     return;
   }
-
   if (error || !profile) {
-    $("authScreen").classList.remove("hidden");
     $("appShell").classList.add("hidden");
-    $("authError").textContent = error || "Profile not found.";
+    $("authScreen").classList.remove("hidden");
+    authMessage("authError", error || "Profile not configured.", true);
     return;
   }
-
-  showPortal(user, profile);
+  showShell(user, profile);
 });
-
